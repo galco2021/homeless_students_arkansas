@@ -1,0 +1,15 @@
+# Arkansas Homeless Students & Poverty (County Level)
+
+Reproducible pipeline that joins county homelessness metrics with county poverty data, cleans/normalizes names, and builds a teaching-oriented “stats lab”.
+
+## Contents
+- `data/processed/` — exported outputs (`homeless_merged_enriched.csv`, `homeless_metrics.csv`)
+- `sql/` — DuckDB SQL scripts (load, clean, join, metrics)
+- `docs/stats-lab.md` — one-page statistics lab (hands-on queries)
+
+## Reproduce (DuckDB)
+```sql
+.read sql/00_load_hd_pulse_raw.sql
+.read sql/01_enrich_merge.sql
+.read sql/02_fix_poverty_rate.sql
+.read sql/03_build_metrics.sql
