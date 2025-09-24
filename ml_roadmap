@@ -1,0 +1,189 @@
+# ML Roadmap — Arkansas Homelessness & Poverty (County Level)
+
+> **Objective:** Build explainable, reproducible baselines that relate poverty context to homelessness levels, composition, and volatility. Prioritize transparency over raw predictive power.
+
+---
+
+## 1) Problem framing
+
+* **Primary targets**
+
+  * `homeless_per_1k_poverty` (rate per 1,000 people-in-poverty)
+  * `share_unsheltered` (unsheltered / total\_enrollment)
+ **Use-cases**
+
+  * Descriptive modeling (drivers, partial effects) for program planning
+  * Early-warning for outlier counties or shifts in composition
+
+**Constraints & caveats**
+
+* Cross-sectional, single-year → no causal claims; treat as *associational*
+* Small counties → noisy rates; consider shrinkage / minimum-denominator filters
+* County names normalized; validate remaining edge cases before modeling
+
+---
+
+## 2) Data to model
+
+Source table: `homeless_metrics` (see `sql/03_build_metrics.sql`).
+
+**Candidate features** (X):
+
+* Poverty context: `value_percent` (or `poverty_rate`), `people_below_poverty`
+* Type mix: `share_unsheltered`, `share_sheltered` (or raw counts if modeling composition separately)
+* Volume / scale: `total_enrollment`
+* Stability: `cv_percent` (quarterly coefficient of variation)
+* Geography dummies (optional): regions, urban/rural (needs enrichment)
+* Interactions: e.g., `poverty_rate × cv_percent`, `poverty_rate × share_unsheltered`
+
+**Targets** (y):
+
+* **Model A:** `homeless_per_1k_poverty` (regression)
+* **Model B:** `share_unsheltered` (regression in \[0,1], or classify into buckets)
+
+**Recommended enrichments** (future):
+
+* Population & density (ACS), unemployment rate
+* Median rent / cost-burden, vacancy rate
+* Shelter capacity / service availability
+* Weather extremes, disaster declarations (FEMA)
+* Eviction filings, overdose rates
+* Spatial neighbors (Moran’s I, spatial lag features)
+
+---
+
+## 3) Modeling plan (baseline → interpretable → robust)
+
+### A. Baselines
+
+* **Linear regression** for `homeless_per_1k_poverty`
+* **Logistic/OLS** on `share_unsheltered` (or Beta regression when added)
+
+### B. Regularized & tree baselines
+
+* **Elastic Net** (handles multicollinearity, offers sparse interpretability)
+* **Gradient Boosted Trees** (XGBoost/LightGBM/CatBoost) for non-linearities
+
+### C. Time-series (if >1y)
+
+* **Seasonal naive / ETS / ARIMA** per county
+* **Panel models** with county & time fixed effects
+
+**Interpretability tools**
+
+* Standardized coefficients (linear models)
+* Permutation importance / SHAP (tree models)
+* Partial dependence / ICE for top features
+
+---
+
+## 4) Evaluation & validation
+
+**Splits**
+
+* Cross-sectional now: **Stratified K-fold** (k=5), stratify by poverty quartile
+* If time-series later: **rolling-origin** validation
+
+**Metrics**
+
+* Regression: RMSE, MAE, R² (report MAE emphasized). For shares/rates, also calibration plots
+* Classification (if bucketing shares): ROC AUC, PR AUC, F1
+
+**Robustness checks**
+
+* Remove top N outliers (by Cook’s distance or top rates) and re-evaluate
+* Winsorize extreme features (e.g., top/bottom 1%)
+* Minimum denominator filters (e.g., `people_below_poverty ≥ 1,000`)
+
+**Leakage / bias checklist**
+
+* Avoid using derived targets as features (e.g., don’t feed `total_enrollment` if predicting it)
+* Check correlations among features; drop near-duplicates
+* Assess subgroup error (urban vs rural) for fairness considerations
+
+---
+
+## 5) Reproducible modeling dataset (SQL)
+
+Create a compact table for ML-ready features.
+
+```sql
+DROP TABLE IF EXISTS ml_dataset;
+CREATE TABLE ml_dataset AS
+SELECT
+  county_id,
+  county_name,
+  CAST(value_percent AS DOUBLE)                AS poverty_pct,
+  CAST(value_percent AS DOUBLE)/100.0          AS poverty_rate,
+  CAST(people_below_poverty AS DOUBLE)         AS ppl_poverty,
+  CAST(total_enrollment AS DOUBLE)             AS total_enroll,
+  share_unsheltered,
+  share_sheltered,
+  cv_percent,
+  homeless_per_1k_poverty                      AS y_rate,
+  share_unsheltered                            AS y_share
+FROM homeless_metrics;
+
+-- Basic sanity
+SELECT COUNT(*) AS n_rows,
+       SUM(y_rate IS NULL) AS null_y_rate,
+       SUM(y_share IS NULL) AS null_y_share
+FROM ml_dataset;
+```
+
+---
+
+## 6) Modeling scaffold (scikit-learn pseudocode)
+
+```python
+# features/targets
+X = df[[
+  'poverty_pct','ppl_poverty','total_enroll',
+  'share_unsheltered','share_sheltered','cv_percent'
+]].fillna(0)
+
+y_rate  = df['y_rate']   # regression target
+
+y_share = df['y_share']  # regression target in [0,1]
+
+# pipeline
+from sklearn.model_selection import KFold, cross_val_score
+from sklearn.preprocessing import StandardScaler
+from sklearn.compose import ColumnTransformer
+from sklearn.pipeline import Pipeline
+from sklearn.linear_model import ElasticNet
+
+num_cols = X.columns.tolist()
+pre = ColumnTransformer([
+    ('num', StandardScaler(), num_cols)
+])
+
+model = Pipeline([
+    ('pre', pre),
+    ('est', ElasticNet(alpha=0.1, l1_ratio=0.5, random_state=42))
+])
+
+cv = KFold(n_splits=5, shuffle=True, random_state=42)
+rmse = -cross_val_score(model, X, y_rate, cv=cv, scoring='neg_root_mean_squared_error')
+print(rmse.mean(), rmse.std())
+```
+
+For tree models (e.g., LightGBM), repeat with `LGBMRegressor` and capture permutation importance.
+
+---
+
+## 7) Reporting
+
+* Model card: data sources, assumptions, target definitions, limitations
+* Feature table: description, units, expected direction, caveats
+* Plots: residuals vs fitted, PDP/ICE for top features, calibration of rates
+
+---
+
+## 8) Next steps
+
+* Add external covariates (ACS, HUD, BLS) and spatial features
+* Expand to multiple years; move to panel/TS models
+* Build small *county profile* report with drivers + predictions + confidence bands
+* Package SQL + notebooks + results in CI (pre-commit + lints; data checks)
+
