@@ -1,0 +1,7 @@
+printf "%s\n" \
+"data/raw/" \
+"*.csv" \
+"*.xlsx" \
+".DS_Store" "Thumbs.db" \
+".ipynb_checkpoints/" \
+"*.tmp" > .gitignore
